@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"gopkg.in/yaml.v2"
 )
 
 // !!!NOTE!!!
@@ -155,6 +155,71 @@ func TestRollingInterval(t *testing.T) {
 	equals(len(b), n, t)
 	existsWithContent(l.filename(), b, t)
 	fileCount(dir, 2, t)
+}
+
+func TestEnableDailyRotationNewFile(t *testing.T) {
+	dir := makeTempDir("DailyRotationNewFile", t)
+	defer os.RemoveAll(dir)
+	filename := logFile(dir)
+	l := &Logger{
+		Filename:            filename,
+		MaxSize:             100,
+		EnableDailyRotation: true,
+	}
+	defer l.Close()
+	b := []byte("boo!")
+	n, err := l.Write(b)
+	isNil(err, t)
+	equals(n, len(b), t)
+	existsWithContent(filename, b, t)
+
+	fileCount(dir, 1, t)
+
+	l.lastModifiedTime = time.Now().Add(-time.Hour * 24) // fake time
+	n, err = l.Write(b)
+	isNil(err, t)
+	equals(n, len(b), t)
+	fileCount(dir, 2, t) //2 files
+}
+
+func TestEnableDailyRotationExistsFile(t *testing.T) {
+	dir := makeTempDir("DailyRotationExistsFile", t)
+	defer os.RemoveAll(dir)
+
+	func() {
+		filename := logFile(dir)
+		l := &Logger{
+			Filename:            filename,
+			MaxSize:             100,
+			EnableDailyRotation: true,
+		}
+		b := []byte("boo!")
+		n, err := l.Write(b)
+		defer l.Close()
+
+		isNil(err, t)
+		equals(n, len(b), t)
+		existsWithContent(filename, b, t)
+
+		equals(true, DateEqual(time.Now(), l.lastModifiedTime), t)
+	}()
+
+	func() {
+		filename := logFile(dir)
+		l := &Logger{
+			Filename:            filename,
+			MaxSize:             100,
+			EnableDailyRotation: true,
+		}
+		b := []byte("boo!")
+		_, err := l.Write(b)
+		defer l.Close()
+
+		isNil(err, t)
+		existsWithContent(filename, append(b, b...), t)
+		fileCount(dir, 1, t) //1 files
+		equals(true, DateEqual(time.Now(), l.lastModifiedTime), t)
+	}()
 }
 
 func TestAutoRotate(t *testing.T) {
