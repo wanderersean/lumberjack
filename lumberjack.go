@@ -98,6 +98,9 @@ type Logger struct {
 	// if the rolling interval is 0 the feature is off, default is 0.
 	RollingInterval int64 `json:"rollinginterval" yaml:"rollinginterval"`
 
+	// EnableDailyRotation is the choice for rotating file daily at 00:00. The default is false.
+	EnableDailyRotation bool `json:"enabledailyrotation" yaml:"enabledailyrotation"`
+
 	// MaxBackups is the maximum number of old log files to retain.  The default
 	// is to retain all old log files (though MaxAge may still cause them to get
 	// deleted.)
@@ -110,11 +113,12 @@ type Logger struct {
 
 	// Compress determines if the rotated log files should be compressed
 	// using gzip. The default is not to perform compression.
-	Compress  bool `json:"compress" yaml:"compress"`
-	createdAt int64
-	size      int64
-	file      *os.File
-	mu        sync.Mutex
+	Compress         bool `json:"compress" yaml:"compress"`
+	createdAt        int64
+	size             int64
+	file             *os.File
+	mu               sync.Mutex
+	lastModifiedTime time.Time // Used only for EnableDailyRotation ability
 
 	millCh    chan bool
 	startMill sync.Once
@@ -137,6 +141,7 @@ var (
 // than MaxSize, the file is closed, renamed to include a timestamp of the
 // current time, and a new log file is created using the original log file name.
 // If the length of the write is greater than MaxSize, an error is returned.
+// This method also takes RollingInterval and EnableDailyRotation into consideration.
 func (l *Logger) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -161,6 +166,12 @@ func (l *Logger) Write(p []byte) (n int, err error) {
 	}
 
 	if l.exceedsRollingInterval() {
+		if err := l.rotate(); err != nil {
+			return 0, err
+		}
+	}
+
+	if l.onNewDay() {
 		if err := l.rotate(); err != nil {
 			return 0, err
 		}
@@ -250,6 +261,7 @@ func (l *Logger) openNew() error {
 	l.file = f
 	l.size = 0
 	l.createdAt = time.Now().Unix()
+	l.lastModifiedTime = time.Now()
 	return nil
 }
 
@@ -288,6 +300,13 @@ func (l *Logger) openExistingOrNew(writeLen int) error {
 	if info.Size()+int64(writeLen) >= l.max() {
 		return l.rotate()
 	}
+
+	// EnableDailyRotation
+	if l.EnableDailyRotation && !DateEqual(info.ModTime(), time.Now()) {
+		return l.rotate()
+	}
+
+	l.lastModifiedTime = info.ModTime()
 
 	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
@@ -466,6 +485,14 @@ func (l *Logger) exceedsRollingInterval() bool {
 	return l.RollingInterval > 0 && time.Now().Unix()-l.createdAt >= l.RollingInterval
 }
 
+// onNewDay checks if the log behavior happens on a new day
+func (l *Logger) onNewDay() bool {
+	if l.EnableDailyRotation && !DateEqual(time.Now(), l.lastModifiedTime) {
+		return true
+	}
+	return false
+}
+
 // dir returns the directory for the current filename.
 func (l *Logger) dir() string {
 	return filepath.Dir(l.filename())
@@ -555,4 +582,10 @@ func (b byFormatTime) Swap(i, j int) {
 
 func (b byFormatTime) Len() int {
 	return len(b)
+}
+
+func DateEqual(a, b time.Time) bool {
+	y1, m1, d1 := a.Date()
+	y2, m2, d2 := b.Date()
+	return y1 == y2 && m1 == m2 && d1 == d2
 }
